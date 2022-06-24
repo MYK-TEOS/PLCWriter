@@ -6,41 +6,10 @@
 //-------------------------------------------------------------------------------
 
 #pragma warning( disable : 4996 )
+#pragma comment(lib, "Ws2_32.lib")
 
-#pragma region グローバル宣言
 #include "framework.h"
 #include "PLCWriter.h"
-
-// 定数
-#define WRITE_COUNT    7
-#define TEXT_LEN       256
-
-/// <summary>
-/// エラー定義
-/// </summary>
-enum Error
-{
-    ERROR_NONE,
-    ERROR_SOCKET_MAKE,
-    ERROR_SOCKET_CONNECT,
-    ERROR_SEND,
-    ERROR_RECIEVE
-};
-
-// グローバル変数:
-HINSTANCE hInst;                                // 現在のインターフェイス
-
-// このコード モジュールに含まれる関数の宣言を転送します:
-LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
-bool    CALLBACK    MainDlgProc(HWND, UINT, WPARAM, LPARAM);
-int                 fs_ExecWrite(HWND);
-bool                fs_MakeSocket(SOCKET*);
-bool                fs_SocketConnect(SOCKET*, const char*, USHORT);
-void                fs_CloseSocket(SOCKET*);
-bool                fs_WriteSend(SOCKET*, WORD*, int, int);
-bool                fs_WriteRecieve(SOCKET*);
-#pragma endregion
-
 
 /// <summary>
 /// アプリケーション エントリ ポイント
@@ -58,10 +27,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
     UNREFERENCED_PARAMETER(nCmdShow);
 
-    hInst = hInstance;
-
     // ダイアログの名前と、プロシージャを指定してDialogBoxを開く
-    int ret = DialogBox(hInst, MAKEINTRESOURCE(IDD_PLCWRITER_DIALOG), NULL, (DLGPROC)MainDlgProc);
+    int ret = (int)DialogBox(hInstance, MAKEINTRESOURCE(IDD_PLCWRITER_DIALOG), NULL, (DLGPROC)MainDlgProc);
 
     return ret;
 }
@@ -168,7 +135,6 @@ int fs_ExecWrite(HWND hDlg)
     const WORD  PORT                    = 10000;            // ポート番号
     const int   START_ADDR              = 4000;             // 開始アドレス(D4000)
 
-    TCHAR       tcBuffer[TEXT_LEN]      = { 0 };
     SOCKET      socket                  = INVALID_SOCKET;
     sockaddr_in addr                    = { 0 };
     bool        bRet                    = false;
@@ -177,9 +143,7 @@ int fs_ExecWrite(HWND hDlg)
     // EDITBOXから入力値を取得
     for (int i = 0; i < WRITE_COUNT; i++)
     {
-        GetDlgItemText(hDlg, IDC_EDIT_D4000 + i, tcBuffer, TEXT_LEN);
-        // テキストとして取得されるので、数値に変換
-        wWriteData[i] = (WORD)_ttoi(tcBuffer);
+        wWriteData[i] = (WORD)GetDlgItemInt(hDlg, IDC_EDIT_D4000 + i, NULL, FALSE);
     }
 
     // Socketを作成
@@ -232,19 +196,22 @@ int fs_ExecWrite(HWND hDlg)
 /// <returns>true:成功 false:失敗</returns>
 bool fs_MakeSocket(SOCKET* pSock)
 {
-    const int           iTimeout    = 500;   // タイムアウト（ミリ秒）
+    const int           TIMEOUT     = 500;   // タイムアウト（ミリ秒）
+
     struct sockaddr_in  addr        = { 0 };
     int                 iError      = 0;
 
+    if (pSock == NULL) return false;
+
     // SOCKETオブジェクトを設定
     *pSock = socket(AF_INET, SOCK_STREAM, 0);
-    if (*pSock < 0) return false;
+    if (*pSock == INVALID_SOCKET) return false;
 
     // 送信タイムアウトを設定
-    iError = setsockopt(*pSock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&iTimeout, sizeof(iTimeout));
+    iError = setsockopt(*pSock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&TIMEOUT, sizeof(TIMEOUT));
     if (iError == SOCKET_ERROR) return false;
     // 受信タイムアウトを設定
-    iError = setsockopt(*pSock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&iTimeout, sizeof(iTimeout));
+    iError = setsockopt(*pSock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&TIMEOUT, sizeof(TIMEOUT));
     if (iError == SOCKET_ERROR) return false;
 
     // 送信元sockaddr_inオブジェクトを設定
@@ -276,9 +243,12 @@ bool fs_SocketConnect(SOCKET* pSock, const char* ipAddress, USHORT port)
     fd_set			    fdsWrite    = { 0 };
     timeval             tvTimeout   = { 0 };
 
+    if (pSock == NULL) return false;
+    if (*pSock == INVALID_SOCKET) return false;
+
     // タイムアウトを有効にするため、非同期型にする
     iRet = ioctlsocket(*pSock, FIONBIO, &ulMode);
-    if (iRet > 0) return false;
+    if (iRet != NO_ERROR) return false;
 
     // 送信先sockaddr_inオブジェクトを設定
     addr.sin_family = AF_INET;
@@ -321,6 +291,9 @@ bool fs_SocketConnect(SOCKET* pSock, const char* ipAddress, USHORT port)
 /// <param name="pSock">Socket</param>
 void fs_CloseSocket(SOCKET* pSock)
 {
+    if (pSock == NULL) return;
+    if (*pSock == INVALID_SOCKET) return;
+
     shutdown(*pSock, SD_BOTH);
     closesocket(*pSock);
     *pSock = INVALID_SOCKET;
@@ -335,12 +308,16 @@ void fs_CloseSocket(SOCKET* pSock)
 /// <param name="data">書き込みデータ</param>
 /// <param name="iStartAddr">書き込み先の先頭アドレス</param>
 /// <param name="YousoNum">要素数</param>
-bool fs_WriteSend(SOCKET* pSocket, WORD* data, int iStartAddr, int YousoNum)
+bool fs_WriteSend(SOCKET* pSock, WORD* data, int iStartAddr, int YousoNum)
 {
-    const int       SEND_MIN_LEN    = 21;
-    unsigned char   pucSendCmd[5000]= { 0 };
-    int             iRet            = 0;
-    int             iDataLen        = 0;
+    const int       SEND_MIN_LEN            = 21;
+
+    unsigned char   pucSendCmd[BUFFER_LEN]  = { 0 };
+    int             iRet                    = 0;
+    int             iDataLen                = 0;
+
+    if (pSock == NULL) return false;
+    if (*pSock == INVALID_SOCKET) return false;
 
     // 送信バッファを初期化
     memset(pucSendCmd, 0, sizeof(pucSendCmd));
@@ -374,7 +351,7 @@ bool fs_WriteSend(SOCKET* pSocket, WORD* data, int iStartAddr, int YousoNum)
         pucSendCmd[21 + i * 2] = (unsigned char)(data[i] % 0x100); //Lo
         pucSendCmd[22 + i * 2] = (unsigned char)(data[i] / 0x100); //High
     }
-    iRet = send(*pSocket, (char*)pucSendCmd, SEND_MIN_LEN+YousoNum*2, 0);
+    iRet = send(*pSock, (char*)pucSendCmd, SEND_MIN_LEN+YousoNum*2, 0);
     if (iRet != SEND_MIN_LEN + YousoNum * 2)
     {
         return false;
@@ -393,9 +370,13 @@ bool fs_WriteRecieve(SOCKET* pSock)
     const int       RETRY_TIMES         = 3;
     const int       RETRY_INTERVAL      = 500;
     const WORD      RECIEVE_DATA_SIZE   = 2;
-    unsigned char   pucData[512]        = { 0 };
+
+    unsigned char   pucData[BUFFER_LEN] = { 0 };
     int             iRet                = 0;
     WORD            wRecievedSize       = 0;
+
+    if (pSock == NULL) return false;
+    if (*pSock == INVALID_SOCKET) return false;
 
     for (int retry = 0; retry < RETRY_TIMES; retry++)
     {
